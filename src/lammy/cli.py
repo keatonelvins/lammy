@@ -5,7 +5,6 @@ import secrets
 import time
 from contextlib import contextmanager
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import Optional, Sequence
 
 import click
@@ -18,6 +17,7 @@ from .models import InstanceRecord, InstanceTypeSummary
 from .render import instance_table, instance_types_table, ssh_keys_table
 from .ssh import default_alias, ensure_ssh_entry, open_ssh_session, sanitize_alias
 
+SSH_READY_STATUSES = {"running", "ready", "active"}
 
 @dataclass
 class AppContext:
@@ -229,9 +229,9 @@ def up_simple(
             image=image_payload,
         )
 
-        if not instance_ids:
-            app.console.print("[yellow]Launch accepted; waiting for provisioning...[/]")
-            raise click.Abort()
+    if not instance_ids:
+        app.console.print("[yellow]Launch accepted; waiting for provisioning...[/]")
+        raise click.Abort()
 
         instance_id = instance_ids[0]
         app.console.print(
@@ -246,7 +246,9 @@ def up_simple(
         instance.id,
     )
 
-    if instance.ip:
+    status_label = _status_label(instance.status)
+
+    if instance.ip and status_label in SSH_READY_STATUSES:
         path = ensure_ssh_entry(
             alias,
             instance.ip,
@@ -258,9 +260,11 @@ def up_simple(
             f"(config: {path.expanduser()})"
         )
     else:
+        label = status_label or "provisioning"
+        reason = "still acquiring a public IP" if not instance.ip else f"currently {label}"
         app.console.print(
-            "[yellow]Instance is still acquiring a public IP. "
-            "Run `lammy ssh setup` in a minute if needed.[/]"
+            f"[yellow]Instance {instance.preferred_display_name()} is {reason}. "
+            "SSH will be ready shortly.[/]"
         )
 
     app.remember_instance(
@@ -269,7 +273,7 @@ def up_simple(
         name=instance.preferred_display_name(),
     )
     app.console.print(
-        f"Connect now with `uv run lammy ssh` or via your editor (Host {alias})."
+        f"Connect now with `lammy ssh` or via your editor (Host {alias})."
     )
 
 
@@ -314,225 +318,6 @@ def down_simple(
 
     if app.config.last_instance_id == target.id:
         app.clear_last_instance()
-
-@cli.command("types")
-@click.option(
-    "--all",
-    "show_all",
-    is_flag=True,
-    help="Include instance types without current capacity.",
-)
-@click.pass_obj
-def list_types(app: AppContext, show_all: bool) -> None:
-    """List available instance types."""
-
-    with handle_api_errors(app.console):
-        types = app.client().list_instance_types()
-    if not show_all:
-        types = [item for item in types if item.regions_with_capacity]
-    if not types:
-        app.console.print("[yellow]No instance types found.[/]")
-        return
-    app.console.print(instance_types_table(types))
-
-
-@cli.group()
-@click.pass_context
-def instances(ctx: click.Context) -> None:
-    """Work with Lambda instances."""
-
-
-@instances.command("list")
-@click.option("--region", help="Filter instances by region.")
-@click.pass_obj
-def instances_list(app: AppContext, region: Optional[str]) -> None:
-    """List running instances."""
-
-    with handle_api_errors(app.console):
-        instances = app.client().list_instances()
-    if region:
-        region_lower = region.lower()
-        instances = [
-            inst for inst in instances if inst.region.name.lower() == region_lower
-        ]
-    if not instances:
-        app.console.print("[yellow]No instances found.[/]")
-        return
-    app.console.print(instance_table(instances))
-
-
-@instances.command("launch")
-@click.option(
-    "--instance-type",
-    "instance_type_name",
-    required=True,
-    help="Instance type name to launch (e.g., gpu_1x_a10).",
-)
-@click.option("--region", help="Region code to launch the instance in (e.g., us-west-1).")
-@click.option("--name", help="Optional display name for the instance.")
-@click.option("--hostname", help="Optional hostname to assign to the instance.")
-@click.option(
-    "--ssh-key",
-    "ssh_key_names",
-    multiple=True,
-    help="Name of an SSH key already registered with Lambda. Repeat to pass multiple.",
-)
-@click.option(
-    "--image",
-    help="Image to use. Use `family:<name>` or `id:<uuid>`. Defaults to GPU BASE 24.04.",
-)
-@click.option("--user-data", type=click.Path(exists=True, dir_okay=False), help="Path to cloud-init user data.")
-@click.option(
-    "--configure-ssh/--no-configure-ssh",
-    default=True,
-    show_default=True,
-    help="Automatically add the instance to your SSH config once it has an IP.",
-)
-@click.option("--ssh-alias", help="Override the SSH host alias to write.")
-@click.option("--ssh-user", help="Override the SSH username for the config entry.")
-@click.option("--identity-file", help="Path to the SSH identity file for connections.")
-@click.pass_obj
-def instances_launch(
-    app: AppContext,
-    instance_type_name: str,
-    region: Optional[str],
-    name: Optional[str],
-    hostname: Optional[str],
-    ssh_key_names: Sequence[str],
-    image: Optional[str],
-    user_data: Optional[str],
-    configure_ssh: bool,
-    ssh_alias: Optional[str],
-    ssh_user: Optional[str],
-    identity_file: Optional[str],
-) -> None:
-    """Launch a new instance."""
-
-    region_name = region or app.config.default_region
-    if not region_name:
-        raise click.UsageError(
-            "Region is required. Provide --region or set a default with "
-            "`lammy settings set --region <code>`."
-        )
-
-    key_names = list(ssh_key_names) or (
-        [app.config.default_ssh_key_name] if app.config.default_ssh_key_name else []
-    )
-    if not key_names:
-        raise click.UsageError(
-            "At least one --ssh-key is required. Register a key in Lambda and reference it here."
-        )
-
-    image_payload = _parse_image(image)
-    user_data_payload = _load_user_data(user_data) if user_data else None
-
-    with handle_api_errors(app.console):
-        instance_ids = app.client().launch_instance(
-            region_name=region_name,
-            instance_type_name=instance_type_name,
-            ssh_key_names=key_names,
-            name=name,
-            hostname=hostname,
-            image=image_payload,
-            user_data=user_data_payload,
-        )
-    if not instance_ids:
-        app.console.print("[yellow]Launch request submitted, awaiting provisioning.[/]")
-        return
-
-    app.console.print(
-        f"[green]Launch request accepted for instance ID(s):[/] {', '.join(instance_ids)}"
-    )
-
-    if not configure_ssh:
-        return
-
-    ssh_user = ssh_user or app.config.ssh_user
-    identity = identity_file or app.config.ssh_identity_file
-
-    with handle_api_errors(app.console):
-        details = _collect_instances(app, instance_ids)
-
-    for inst in details:
-        if not inst.ip:
-            app.console.print(
-                f"[yellow]Instance {inst.id} is provisioning; no public IP yet. "
-                "Re-run `lammy ssh setup` once it is ready.[/]"
-            )
-            continue
-        alias = ssh_alias or default_alias(
-            app.config.ssh_alias_prefix, inst.preferred_display_name(), inst.id
-        )
-        path = ensure_ssh_entry(
-            alias,
-            inst.ip,
-            user=ssh_user,
-            identity_file=identity,
-        )
-        app.console.print(
-            f"[green]SSH entry ready:[/] Host [cyan]{alias}[/] → {inst.ip} (config: {path.expanduser()})"
-        )
-        app.remember_instance(
-            instance_id=inst.id,
-            alias=alias,
-            name=inst.preferred_display_name(),
-        )
-
-
-@instances.command("restart")
-@click.argument("identifiers", nargs=-1)
-@click.pass_obj
-def instances_restart(app: AppContext, identifiers: Sequence[str]) -> None:
-    """Restart one or more instances by ID or name."""
-
-    instance_ids = _resolve_instance_ids(app, identifiers)
-    if not instance_ids:
-        app.console.print("[yellow]No matching instances found to restart.[/]")
-        return
-    with handle_api_errors(app.console):
-        restarted = app.client().restart_instances(instance_ids)
-    for inst in restarted:
-        app.console.print(
-            f"[green]Restarted:[/] {inst.id} ({inst.preferred_display_name()}) → {inst.status}"
-        )
-
-
-@instances.command("terminate")
-@click.argument("identifiers", nargs=-1)
-@click.option(
-    "--yes",
-    is_flag=True,
-    help="Skip the interactive confirmation prompt.",
-)
-@click.pass_obj
-def instances_terminate(
-    app: AppContext, identifiers: Sequence[str], yes: bool
-) -> None:
-    """Terminate one or more instances."""
-
-    instance_ids = _resolve_instance_ids(app, identifiers)
-    if not instance_ids:
-        app.console.print("[yellow]No matching instances found to terminate.[/]")
-        return
-
-    if not yes:
-        confirmed = Confirm.ask(
-            f"Terminate {len(instance_ids)} instance(s)? This cannot be undone.",
-            default=False,
-        )
-        if not confirmed:
-            app.console.print("[yellow]Termination aborted.[/]")
-            return
-
-    with handle_api_errors(app.console):
-        terminated = app.client().terminate_instances(instance_ids)
-    for inst in terminated:
-        app.console.print(
-            f"[green]Terminated:[/] {inst.id} ({inst.preferred_display_name()})"
-        )
-        if app.config.last_instance_id == inst.id:
-            app.clear_last_instance()
-
 
 @cli.group(invoke_without_command=True)
 @click.pass_context
@@ -652,7 +437,28 @@ def settings_set(
     identity_file: Optional[str],
     alias_prefix: Optional[str],
 ) -> None:
-    """Update default settings."""
+    """
+    Update default settings for lammy commands.
+
+    Provide one or more options to update only those values. Run without options to
+    see a brief summary and examples.
+    """
+
+    if all(
+        value is None
+        for value in (region, ssh_key, image, ssh_user, identity_file, alias_prefix)
+    ):
+        app.console.print(
+            "[yellow]Nothing to update. Provide one or more options to change your defaults.[/]"
+        )
+        app.console.print(
+            "\nExamples:\n"
+            "  lammy settings set --region us-west-1\n"
+            "  lammy settings set --ssh-key my-key\n"
+            "  lammy settings set --image family:lambda-stack\n"
+            "  lammy settings set --ssh-user ubuntu --identity-file ~/.ssh/id_ed25519"
+        )
+        return
 
     image_value: Optional[str]
     if image is None:
@@ -706,39 +512,6 @@ def _parse_image(image: Optional[str]) -> Optional[dict]:
     if image.startswith("id:"):
         return {"id": image.split(":", 1)[1]}
     return {"family": image}
-
-
-def _load_user_data(path_str: str) -> str:
-    path = Path(path_str).expanduser()
-    try:
-        return path.read_text(encoding="utf-8")
-    except OSError as exc:
-        raise click.ClickException(f"Unable to read user data file: {exc}") from exc
-
-
-def _collect_instances(app: AppContext, identifiers: Sequence[str]) -> Sequence[InstanceRecord]:
-    details: list[InstanceRecord] = []
-    for instance_id in identifiers:
-        with handle_api_errors(app.console):
-            details.append(app.client().get_instance(instance_id))
-    return details
-
-
-def _resolve_instance_ids(app: AppContext, identifiers: Sequence[str]) -> Sequence[str]:
-    if not identifiers:
-        return []
-    with handle_api_errors(app.console):
-        instances = app.client().list_instances()
-    id_map = {inst.id: inst for inst in instances}
-    name_map = {inst.preferred_display_name(): inst for inst in instances}
-    resolved: list[str] = []
-    for identifier in identifiers:
-        inst = id_map.get(identifier) or name_map.get(identifier)
-        if inst:
-            resolved.append(inst.id)
-        else:
-            app.console.print(f"[yellow]No instance found for '{identifier}'.[/]")
-    return resolved
 
 
 def _resolve_single_instance(app: AppContext, identifier: str) -> InstanceRecord:
@@ -999,9 +772,18 @@ def _connect_via_ssh(
             instance.id,
         )
 
+        status_label = _status_label(instance.status)
         if not instance.ip:
             app.console.print(
-                "[yellow]Instance does not currently have a public IP. Try again shortly.[/]"
+                f"[yellow]{instance.preferred_display_name()} is {status_label or 'provisioning'}; "
+                "waiting for a public IP. Try again shortly.[/]"
+            )
+            return
+
+        if status_label and status_label not in SSH_READY_STATUSES:
+            app.console.print(
+                f"[yellow]{instance.preferred_display_name()} is currently {status_label}. "
+                "SSH will become available once it reports running.[/]"
             )
             return
 
@@ -1031,3 +813,9 @@ def _connect_via_ssh(
         raise click.Abort() from exc
     if exit_code != 0:
         app.console.print(f"[yellow]ssh exited with status {exit_code}[/]")
+
+
+def _status_label(raw_status: Optional[str]) -> str:
+    if not raw_status:
+        return ""
+    return str(raw_status).strip().lower()

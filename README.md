@@ -5,7 +5,7 @@ It focuses on the flow of picking an instance type, launching it, wiring up SSH,
 then shutting it down when you are done.
 
 ```
-uv run lammy --help
+lammy --help
 ```
 
 ## Quick Start
@@ -13,14 +13,14 @@ uv run lammy --help
 1. **Install dependencies**
 
    ```
-   uv sync
+   uv tool install lammy
    ```
 
 2. **Authenticate**
 
-   ```
-   uv run lammy auth login
-   ```
+```
+   lammy auth login
+```
 
    Paste your Lambda API key when prompted. You can generate keys in the Lambda
    Cloud dashboard. `lammy` also discovers `LAMBDA_API_KEY` from the environment
@@ -28,26 +28,26 @@ uv run lammy --help
 
 3. **Set your defaults (optional but recommended)**
 
-   ```
-   uv run lammy settings set --region us-west-1 --ssh-key my-default-key
-   ```
+```
+   lammy settings set --region us-west-1 --ssh-key my-default-key
+```
 
 4. **Pick a machine**
 
-   ```
-   uv run lammy list
-   ```
+```
+   lammy list
+```
 
    This prints the instance types that currently have capacity. Add
    `--all` if you want the full catalog.
 
 5. **Launch, connect, terminate**
 
-   ```
-   uv run lammy up              # guided launch flow (press enter to accept defaults)
-   uv run lammy ssh             # jumps straight into SSH for the most recent instance
-   uv run lammy down            # terminates the most recent instance (with confirm)
-   ```
+```
+   lammy up              # guided launch flow (press enter to accept defaults)
+   lammy ssh             # jumps straight into SSH for the most recent instance
+   lammy down            # terminates the most recent instance (with confirm)
+```
 
    `lammy up` writes an SSH host entry automatically. Use the printed alias in
    your Remote Explorer / editor of choice if you prefer a GUI connection.
@@ -74,17 +74,8 @@ uv run lammy --help
 
 | Command | Description |
 | ------- | ----------- |
-| `lammy types` | Same as `lammy list`, but sticks to instance types only. |
-| `lammy types --all` | Include types with no reported capacity. |
-
-### Instances
-
-| Command | Description |
-| ------- | ----------- |
-| `lammy instances list` | Show running instances, with region, pricing, and status. |
-| `lammy instances launch ...` | Launch a new VM. Honors defaults from `lammy settings` and accepts overrides (`--instance-type`, `--region`, `--ssh-key`, `--image`, `--user-data`). By default the CLI writes an SSH `Host` entry once the instance has a public IP. |
-| `lammy instances restart <id-or-name>...` | Restart one or more instances. |
-| `lammy instances terminate <id-or-name>...` | Terminate instances (with optional `--yes` to skip confirmation). |
+| `lammy list --all` | Include instance types without reported capacity (defaults to capacity-only). |
+| `lammy list --running` | Show currently running instances instead of the catalog. |
 
 ### SSH helpers
 
@@ -101,7 +92,7 @@ The values are:
 
 | Key | Purpose |
 | --- | ------- |
-| `default_region` | Region used when `--region` is omitted on `instances launch`. |
+| `default_region` | Region used when `--region` is omitted on `lammy up`. |
 | `default_ssh_key_name` | SSH key name assumed when `--ssh-key` flags are omitted. |
 | `default_image` | Image string applied on launch (`family:gpu-base-24-04` by default). |
 | `ssh_user` | Default user used in generated SSH host blocks and ad-hoc connections. |
@@ -111,7 +102,7 @@ The values are:
 Inspect the stored configuration with:
 
 ```
-uv run lammy settings show
+lammy settings show
 ```
 
 ### Images
@@ -120,7 +111,7 @@ uv run lammy settings show
 whenever you like:
 
 ```
-uv run lammy settings set --image family:<family-name>
+lammy settings set --image family:<family-name>
 ```
 
 Prefer an explicit image ID? Use `--image id:<uuid>`.
