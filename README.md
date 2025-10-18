@@ -1,125 +1,240 @@
 # lammy
 
-`lammy` is a minimal command line helper for day-to-day Lambda Cloud management.
-It focuses on the flow of picking an instance type, launching it, wiring up SSH,
-then shutting it down when you are done.
-
-```
-lammy --help
-```
+`lammy` is a streamlined command line tool for managing Lambda Cloud GPU instances.
+Launch, connect, and manage your VMs with zero configuration required.
 
 ## Quick Start
 
-1. **Install dependencies**
+1. **Install**
 
-   ```
+   ```bash
    uv tool install lammy
    ```
 
 2. **Authenticate**
 
-```
-   lammy auth login
-```
+   ```bash
+   lammy auth
+   ```
 
-   Paste your Lambda API key when prompted. You can generate keys in the Lambda
-   Cloud dashboard. `lammy` also discovers `LAMBDA_API_KEY` from the environment
-   or a local `.env`.
+   You'll be prompted for:
+   - Lambda API key (get from Lambda Cloud dashboard)
+   - GitHub token (optional, enables auto git setup on VMs)
 
-3. **Set your defaults (optional but recommended)**
+   The GitHub token should be a Personal Access Token (classic) with `repo` scope.
 
-```
-   lammy settings set --region us-west-1 --ssh-key my-default-key
-```
+   Tip: You can also set `LAMBDA_API_KEY` in your environment or `.env` file.
 
-4. **Pick a machine**
+3. **Launch an instance**
 
-```
-   lammy list
-```
+   ```bash
+   lammy up
+   ```
 
-   This prints the instance types that currently have capacity. Add
-   `--all` if you want the full catalog.
+   Interactive prompts will guide you through:
+   - Selecting an instance type (from available capacity)
+   - Choosing a region
+   - Auto-detecting your SSH key (or choosing if you have multiple)
+   - Setting an instance name (or using auto-generated)
 
-5. **Launch, connect, terminate**
+4. **Connect via SSH**
 
-```
-   lammy up              # guided launch flow (press enter to accept defaults)
-   lammy ssh             # jumps straight into SSH for the most recent instance
-   lammy down            # terminates the most recent instance (with confirm)
-```
+   ```bash
+   lammy ssh
+   ```
 
-   `lammy up` writes an SSH host entry automatically. Use the printed alias in
-   your Remote Explorer / editor of choice if you prefer a GUI connection.
+   Connects to your most recent instance. SSH config is automatically set up.
+
+5. **Terminate when done**
+
+   ```bash
+   lammy down
+   ```
+
+   Terminates your most recent instance (with confirmation prompt).
 
 ## Commands
 
-### Authentication
+All commands are fully interactive when information is missing. No flags required!
 
-| Command | Description |
-| ------- | ----------- |
-| `lammy auth login` | Prompt for an API key and store it in `~/.config/lammy/config.json`. |
-| `lammy auth show` | Display the masked API key currently in use and the config path. |
+### Core Commands
 
-### Everyday flow
-
-| Command | Description |
-| ------- | ----------- |
-| `lammy list` | Show instance types with live capacity (`--running` flips to currently running servers, `--all` includes types without capacity). |
-| `lammy up` | Guided launcher. Prompts for type/region/SSH key if not already configured, auto-picks the GPU Base 24.04 image when available, waits for the public IP, and writes your SSH config. |
-| `lammy ssh [name]` | Connect to the most recent instance (or a named one). Any extra arguments (e.g. `-L ...`) are passed through to `ssh`. |
-| `lammy down [name]` | Terminate the most recent (or a named) instance. Use `--force` to skip the confirm.
-
-### Advanced catalog commands
-
-| Command | Description |
-| ------- | ----------- |
-| `lammy list --all` | Include instance types without reported capacity (defaults to capacity-only). |
-| `lammy list --running` | Show currently running instances instead of the catalog. |
-
-### SSH helpers
-
-| Command | Description |
-| ------- | ----------- |
-| `lammy ssh setup <id-or-name>` | Write/update a dedicated host block in `~/.ssh/config`. |
-| `lammy ssh connect [id-or-name]` | Same as the bare `lammy ssh` command, but lets you spell out an identifier/alias and optional extra args. |
-| `lammy ssh keys` | List SSH keys registered with Lambda Cloud. |
-
-### Settings
-
-`lammy settings` stores lightweight defaults inside `~/.config/lammy/config.json`.
-The values are:
-
-| Key | Purpose |
-| --- | ------- |
-| `default_region` | Region used when `--region` is omitted on `lammy up`. |
-| `default_ssh_key_name` | SSH key name assumed when `--ssh-key` flags are omitted. |
-| `default_image` | Image string applied on launch (`family:gpu-base-24-04` by default). |
-| `ssh_user` | Default user used in generated SSH host blocks and ad-hoc connections. |
-| `ssh_identity_file` | Optional path to an identity file (`~/.ssh/id_ed25519`, etc.) written into the SSH config. |
-| `ssh_alias_prefix` | Prefix applied to generated host aliases (default `lammy`). |
-
-Inspect the stored configuration with:
-
-```
-lammy settings show
+```bash
+lammy auth                 # Authenticate with Lambda Cloud and GitHub
+lammy list                 # Show instance types with available capacity
+lammy vms                  # List your running VMs
+lammy up                   # Launch a new VM (auto-configures git)
+lammy down [identifier]    # Terminate a VM
+lammy ssh [identifier]     # Connect to a VM via SSH
+lammy restart [identifier] # Restart a VM
+lammy setup-git [identifier] # Configure git on an existing VM
+lammy sync                 # Sync SSH configs (clean up terminated VMs)
 ```
 
-### Images
+### Command Details
 
-`lammy` pins launches to the `gpu-base-24-04` family out of the box. Change it
-whenever you like:
+**`lammy auth`**
+- Prompts for Lambda API key and GitHub token (optional)
+- GitHub token enables automatic git configuration on new VMs
+- Stores credentials in `~/.config/lammy/config.json`
+- Flags: `--api-key`, `--github-token` to skip prompts
+
+**`lammy list`**
+- Shows only instance types that currently have capacity
+- Displays specs, pricing, and available regions
+
+**`lammy vms`**
+- Shows your currently running VMs
+- Displays instance ID, name, type, IP, status, and region
+- Clean output without table borders for easy copy/paste
+
+**`lammy up`**
+- Fully interactive instance launch
+- Auto-detects SSH key if you only have one
+- Auto-generates instance name if not provided
+- Waits for IP assignment and sets up SSH config
+- Auto-configures git if GitHub token is set (enables private repo cloning)
+- Options: `--type`, `--region`, `--ssh-key`, `--name`
+
+**`lammy down [identifier]`**
+- Terminates an instance
+- Without identifier: uses most recent instance
+- With multiple instances: shows interactive prompt
+- Options: `--force` to skip confirmation
+
+**`lammy ssh [identifier]`**
+- Connects to an instance via SSH
+- Without identifier: uses most recent instance
+- Automatically sets up SSH config on connect
+- Pass through extra SSH args: `lammy ssh -L 8080:localhost:8080`
+
+**`lammy restart [identifier]`**
+- Restarts an instance
+- Without identifier: uses most recent instance
+- Options: `--force` to skip confirmation
+
+**`lammy setup-git [identifier]`**
+- Configure git on a VM (useful for VMs created outside lammy)
+- Uses your stored GitHub token
+- Enables cloning private repos
+- Without identifier: uses most recent instance
+- Note: `lammy up` auto-configures git, so this is only needed for external VMs
+
+**`lammy sync`**
+- Syncs SSH config with currently running VMs
+- Removes stale SSH entries for terminated instances
+- Updates SSH config for all running VMs
+- Clears cached last instance if it's no longer running
+
+### Smart Features
+
+**Auto SSH Key Detection**
+- If you have exactly 1 SSH key registered: auto-selected
+- If you have multiple: interactive prompt shown
+- No configuration or "default" settings needed
+
+**Last Instance Tracking**
+- `lammy` remembers your most recent instance
+- `lammy ssh`, `lammy down`, `lammy restart` use it by default
+- No need to specify instance ID repeatedly
+
+**Interactive Fallbacks**
+- All commands work without flags
+- Missing information? You'll be prompted interactively
+- Numbered selection for quick picking
+
+**Auto Git Configuration**
+- Configure GitHub token once during `lammy auth`
+- New VMs automatically get git configured
+- Clone private repos immediately after launch
+- Use `lammy setup-git` for existing VMs
+
+## Configuration
+
+Minimal configuration stored in `~/.config/lammy/config.json`:
+
+```json
+{
+  "api_key": "your-lambda-api-key",
+  "github_token": "your-github-token",
+  "last_instance_id": "instance-id",
+  "ssh_user": "ubuntu",
+  "ssh_identity_file": null
+}
+```
+
+- `api_key`: Your Lambda Cloud API key
+- `github_token`: GitHub Personal Access Token (optional, enables auto git setup)
+- `last_instance_id`: Most recently used instance (auto-tracked)
+- `ssh_user`: SSH username (default: "ubuntu")
+- `ssh_identity_file`: Path to SSH key file (optional, auto-detected)
+
+## SSH Config
+
+`lammy` automatically manages your `~/.ssh/config` file. When you launch or connect to an instance,
+an entry is created:
 
 ```
-lammy settings set --image family:<family-name>
+# Lammy lammy-gpu-1x-a10-xy start
+Host lammy-gpu-1x-a10-xy
+  HostName 123.45.67.89
+  User ubuntu
+  ServerAliveInterval 60
+  ServerAliveCountMax 5
+  StrictHostKeyChecking accept-new
+# Lammy lammy-gpu-1x-a10-xy end
 ```
 
-Prefer an explicit image ID? Use `--image id:<uuid>`.
+You can then connect from your IDE or editor using the host alias.
 
+## Examples
+
+**Quick launch and connect flow:**
+```bash
+lammy up          # Launch interactively
+lammy ssh         # Connect to it
+lammy down        # Terminate when done
+```
+
+**Non-interactive launch:**
+```bash
+lammy up --type gpu_1x_a10 --region us-west-1 --name my-training-job
+```
+
+**SSH with port forwarding:**
+```bash
+lammy ssh -L 8888:localhost:8888
+```
+
+**Manage specific instance:**
+```bash
+lammy vms                 # List all running VMs
+lammy ssh instance-xyz    # Connect to specific one
+lammy restart instance-xyz # Restart it
+lammy down instance-xyz   # Terminate it
+```
+
+**Work with private repos:**
+```bash
+lammy auth                # Configure GitHub token once
+lammy up                  # Launch VM (git auto-configured!)
+lammy ssh                 # Connect and start cloning
+```
+
+**Configure git on external VMs:**
+```bash
+# For VMs created via Lambda console:
+lammy setup-git           # Configure git on any running VM
+```
+
+**Clean up after terminated VMs:**
+```bash
+lammy sync                # Remove SSH entries for terminated VMs
+```
 
 ## Publishing
 
-```
+```bash
 uv build
-uv publish --token ...
+source .env && uv publish --token $PYPI_TOKEN 
 ```

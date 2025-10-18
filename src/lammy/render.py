@@ -8,8 +8,15 @@ from .models import InstanceRecord, InstanceTypeSummary, SshKeyRecord
 
 
 def instance_table(instances: Iterable[InstanceRecord]) -> Table:
-    table = Table(show_lines=False, pad_edge=False, title="Running Instances")
-    table.add_column("ID", overflow="fold")
+    table = Table(
+        show_lines=False,
+        pad_edge=False,
+        show_edge=False,
+        box=None,
+        title="Running Instances",
+        title_style="bold",
+    )
+    table.add_column("ID", overflow="fold", no_wrap=False)
     table.add_column("Name")
     table.add_column("Type")
     table.add_column("GPUs", justify="right")
@@ -34,7 +41,14 @@ def instance_table(instances: Iterable[InstanceRecord]) -> Table:
 
 
 def instance_types_table(items: Iterable[InstanceTypeSummary]) -> Table:
-    table = Table(show_lines=False, pad_edge=False, title="Instance Types")
+    table = Table(
+        show_lines=False,
+        pad_edge=False,
+        show_edge=False,
+        box=None,
+        title="Instance Types",
+        title_style="bold",
+    )
     table.add_column("Name")
     table.add_column("Description")
     table.add_column("GPUs", justify="right")
@@ -61,7 +75,14 @@ def instance_types_table(items: Iterable[InstanceTypeSummary]) -> Table:
 
 
 def ssh_keys_table(keys: Iterable[SshKeyRecord]) -> Table:
-    table = Table(show_lines=False, pad_edge=False, title="SSH Keys")
+    table = Table(
+        show_lines=False,
+        pad_edge=False,
+        show_edge=False,
+        box=None,
+        title="SSH Keys",
+        title_style="bold",
+    )
     table.add_column("Name")
     table.add_column("ID")
     table.add_column("Fingerprint")

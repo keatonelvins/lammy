@@ -17,15 +17,10 @@ class LammyConfig:
     """Simple representation of the persisted lammy configuration."""
 
     api_key: Optional[str] = None
-    default_region: Optional[str] = None
-    default_ssh_key_name: Optional[str] = None
-    default_image: Optional[str] = DEFAULT_IMAGE
+    github_token: Optional[str] = None
     ssh_user: str = "ubuntu"
     ssh_identity_file: Optional[str] = None
-    ssh_alias_prefix: str = "lammy"
     last_instance_id: Optional[str] = None
-    last_instance_alias: Optional[str] = None
-    last_instance_name: Optional[str] = None
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "LammyConfig":
@@ -84,51 +79,21 @@ class ConfigManager:
         self.save(config)
         return config
 
-    def update_defaults(
-        self,
-        *,
-        default_region: Optional[str] = None,
-        default_ssh_key_name: Optional[str] = None,
-        default_image: Optional[str] = None,
-        ssh_user: Optional[str] = None,
-        ssh_identity_file: Optional[str] = None,
-        ssh_alias_prefix: Optional[str] = None,
-    ) -> LammyConfig:
+    def set_github_token(self, github_token: str) -> LammyConfig:
         config = self.load()
-        if default_region is not None:
-            config.default_region = default_region or None
-        if default_ssh_key_name is not None:
-            config.default_ssh_key_name = default_ssh_key_name or None
-        if default_image is not None:
-            config.default_image = default_image or None
-        if ssh_user is not None:
-            config.ssh_user = ssh_user or config.ssh_user
-        if ssh_identity_file is not None:
-            config.ssh_identity_file = ssh_identity_file or None
-        if ssh_alias_prefix is not None:
-            config.ssh_alias_prefix = ssh_alias_prefix or config.ssh_alias_prefix
+        config.github_token = github_token.strip()
         self.save(config)
         return config
 
-    def remember_instance(
-        self,
-        *,
-        instance_id: str,
-        alias: str,
-        name: Optional[str] = None,
-    ) -> LammyConfig:
+    def remember_instance(self, instance_id: str) -> LammyConfig:
         config = self.load()
         config.last_instance_id = instance_id
-        config.last_instance_alias = alias
-        config.last_instance_name = name
         self.save(config)
         return config
 
     def clear_last_instance(self) -> LammyConfig:
         config = self.load()
         config.last_instance_id = None
-        config.last_instance_alias = None
-        config.last_instance_name = None
         self.save(config)
         return config
 
