@@ -65,6 +65,9 @@ class AppContext:
     def clear_last_instance(self) -> None:
         self.config = self.config_manager.clear_last_instance()
 
+    def remember_ssh_key(self, ssh_key_name: str) -> None:
+        self.config = self.config_manager.remember_ssh_key(ssh_key_name)
+
 
 @contextmanager
 def handle_api_errors(console: Console):
@@ -111,25 +114,43 @@ def cli(ctx: click.Context) -> None:
 def auth(app: AppContext, api_key: Optional[str], github_token: Optional[str]) -> None:
     """Authenticate with Lambda Cloud and optionally configure GitHub access."""
 
+    changed = False
+
     # Lambda API key
     if not api_key:
-        api_key = Prompt.ask("Lambda API key", password=True)
+        if app.config.api_key:
+            # Already configured - ask if they want to update
+            if not Confirm.ask("Lambda API key already configured. Update it?", default=False):
+                app.console.print("[dim]Keeping existing API key[/]")
+            else:
+                api_key = Prompt.ask("Lambda API key", password=True)
+        else:
+            # Not configured - prompt for it
+            api_key = Prompt.ask("Lambda API key", password=True)
 
-    api_key = api_key.strip()
-    if not api_key:
-        raise click.BadParameter("API key cannot be empty.")
+    if api_key:
+        api_key = api_key.strip()
+        if not api_key:
+            raise click.BadParameter("API key cannot be empty.")
 
-    config = app.config_manager.set_api_key(api_key)
-    app.replace_api_key(api_key)
-    app.config = config
-    app.console.print(
-        f"[green]Lambda API key saved[/]"
-    )
+        config = app.config_manager.set_api_key(api_key)
+        app.replace_api_key(api_key)
+        app.config = config
+        app.console.print("[green]Lambda API key saved[/]")
+        changed = True
 
     # GitHub token (optional)
     if github_token is None:
-        if Confirm.ask("Configure GitHub access token? (enables auto git setup on VMs)", default=True):
-            github_token = Prompt.ask("GitHub personal access token (classic with 'repo' scope)", password=True)
+        if app.config.github_token:
+            # Already configured - ask if they want to update
+            if Confirm.ask("GitHub token already configured. Update it?", default=False):
+                github_token = Prompt.ask("GitHub personal access token (classic with 'repo' scope)", password=True)
+            else:
+                app.console.print("[dim]Keeping existing GitHub token[/]")
+        else:
+            # Not configured - ask if they want to configure it
+            if Confirm.ask("Configure GitHub access token? (enables auto git setup on VMs)", default=True):
+                github_token = Prompt.ask("GitHub personal access token (classic with 'repo' scope)", password=True)
 
     if github_token:
         github_token = github_token.strip()
@@ -137,9 +158,16 @@ def auth(app: AppContext, api_key: Optional[str], github_token: Optional[str]) -
             config = app.config_manager.set_github_token(github_token)
             app.config = config
             app.console.print("[green]GitHub token saved[/]")
+            changed = True
 
             # Git config (email/name)
-            if Confirm.ask("Configure git email/name?", default=True):
+            should_configure_git = False
+            if app.config.git_email and app.config.git_name:
+                should_configure_git = Confirm.ask("Update git email/name?", default=False)
+            else:
+                should_configure_git = Confirm.ask("Configure git email/name?", default=True)
+
+            if should_configure_git:
                 git_email = Prompt.ask("Git email", default=app.config.git_email or "")
                 git_name = Prompt.ask("Git name", default=app.config.git_name or "")
 
@@ -150,23 +178,50 @@ def auth(app: AppContext, api_key: Optional[str], github_token: Optional[str]) -
 
                 app.config_manager.save(app.config)
                 app.console.print("[green]Git config saved[/]")
-        else:
-            app.console.print("[dim]Skipping GitHub token[/]")
+                changed = True
 
     # Setup scripts (optional)
-    if Confirm.ask("Configure VM setup scripts? (auto-run on lammy up)", default=False):
-        app.console.print("[dim]Enter script URLs or local paths (one per line, empty line to finish):[/]")
-        scripts = []
-        while True:
-            script = Prompt.ask(f"Script {len(scripts) + 1}", default="")
-            if not script:
-                break
-            scripts.append(script.strip())
+    if app.config.setup_scripts:
+        # Already configured - ask if they want to update
+        if Confirm.ask(f"Setup scripts already configured ({len(app.config.setup_scripts)} script(s)). Update them?", default=False):
+            app.console.print("[dim]Enter script URLs or local paths (one per line, empty line to finish):[/]")
+            scripts = []
+            while True:
+                script = Prompt.ask(f"Script {len(scripts) + 1}", default="")
+                if not script:
+                    break
+                scripts.append(script.strip())
 
-        if scripts:
-            app.config.setup_scripts = scripts
-            app.config_manager.save(app.config)
-            app.console.print(f"[green]Saved {len(scripts)} setup script(s)[/]")
+            if scripts:
+                app.config.setup_scripts = scripts
+                app.config_manager.save(app.config)
+                app.console.print(f"[green]Saved {len(scripts)} setup script(s)[/]")
+                changed = True
+            else:
+                # User entered nothing - clear scripts
+                app.config.setup_scripts = []
+                app.config_manager.save(app.config)
+                app.console.print("[dim]Setup scripts cleared[/]")
+                changed = True
+    else:
+        # Not configured - ask if they want to configure it
+        if Confirm.ask("Configure VM setup scripts? (auto-run on lammy up)", default=False):
+            app.console.print("[dim]Enter script URLs or local paths (one per line, empty line to finish):[/]")
+            scripts = []
+            while True:
+                script = Prompt.ask(f"Script {len(scripts) + 1}", default="")
+                if not script:
+                    break
+                scripts.append(script.strip())
+
+            if scripts:
+                app.config.setup_scripts = scripts
+                app.config_manager.save(app.config)
+                app.console.print(f"[green]Saved {len(scripts)} setup script(s)[/]")
+                changed = True
+
+    if not changed:
+        app.console.print("[dim]No changes made[/]")
 
     app.console.print(f"[dim]Config: {app.config_manager.config_path.expanduser()}[/]")
 
@@ -239,6 +294,9 @@ def up(
         ssh_key = _auto_select_ssh_key(app, ssh_key_name)
         if not ssh_key:
             raise click.Abort()
+
+        # Remember this SSH key for future launches
+        app.remember_ssh_key(ssh_key)
 
         # Select/generate instance name
         desired_name = _select_instance_name(selected_type, instance_name)
@@ -631,6 +689,7 @@ def _auto_select_ssh_key(app: AppContext, provided: Optional[str]) -> Optional[s
     Automatically select SSH key:
     - If provided, use it
     - If user has exactly 1 key, auto-select it
+    - If user has used a key before, default to that one
     - Otherwise, show interactive prompt
     """
     keys = app.client().list_ssh_keys()
@@ -654,10 +713,17 @@ def _auto_select_ssh_key(app: AppContext, provided: Optional[str]) -> Optional[s
         app.console.print(f"[dim]Using SSH key:[/] {keys[0].name}")
         return keys[0].name
 
-    # Multiple keys: show interactive prompt
+    # Multiple keys: check if we have a saved default
+    default_choice = app.config.default_ssh_key or keys[0].name
+
+    # Verify the saved default still exists in the account
+    default_exists = any(key.name == default_choice for key in keys)
+    if not default_exists:
+        default_choice = keys[0].name
+
+    # Show interactive prompt with smart default
     from .render import ssh_keys_table
     app.console.print(ssh_keys_table(keys))
-    default_choice = keys[0].name
     while True:
         selection = Prompt.ask(
             "SSH key",

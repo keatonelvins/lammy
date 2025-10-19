@@ -24,6 +24,7 @@ class LammyConfig:
     ssh_user: str = "ubuntu"
     ssh_identity_file: Optional[str] = None
     last_instance_id: Optional[str] = None
+    default_ssh_key: Optional[str] = None
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "LammyConfig":
@@ -97,6 +98,12 @@ class ConfigManager:
     def clear_last_instance(self) -> LammyConfig:
         config = self.load()
         config.last_instance_id = None
+        self.save(config)
+        return config
+
+    def remember_ssh_key(self, ssh_key_name: str) -> LammyConfig:
+        config = self.load()
+        config.default_ssh_key = ssh_key_name
         self.save(config)
         return config
 
