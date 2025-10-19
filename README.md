@@ -21,7 +21,7 @@ Launch, connect, and manage your VMs with zero configuration required.
    - Lambda API key (get from Lambda Cloud dashboard)
    - GitHub token (optional, enables auto git setup on VMs)
    - Git email/name (optional, for commit authorship)
-   - Setup scripts (optional, auto-run on every new VM)
+   - Setup scripts (optional, run with `lammy setup`)
 
    The GitHub token should be a Personal Access Token (classic) with `repo` scope.
    Setup scripts can be URLs (e.g., https://example.com/install.sh) or local file paths.
@@ -65,11 +65,11 @@ All commands are fully interactive when information is missing. No flags require
 ```bash
 lammy auth               # Authenticate and configure (API key, git, setup scripts)
 lammy list               # Show instance types with available capacity
-lammy vms                # List your running VMs
-lammy up                 # Launch a new VM (auto-configures git + runs setup scripts)
+lammy vms                # List your running VMs (use --all for team VMs)
+lammy up                 # Launch a new VM (auto-configures git)
 lammy down [identifier]  # Terminate a VM
 lammy ssh [identifier]   # Connect to a VM via SSH
-lammy setup [identifier] # Run git + setup scripts on an existing VM
+lammy setup [identifier] # Run setup scripts on a VM (interactive selection)
 lammy sync               # Sync SSH configs (clean up terminated VMs)
 ```
 
@@ -79,7 +79,7 @@ lammy sync               # Sync SSH configs (clean up terminated VMs)
 - Prompts for Lambda API key and GitHub token (optional)
 - Optionally configure git email/name for commits
 - Optionally configure setup scripts (URLs or local paths)
-- Setup scripts auto-run on every `lammy up`
+- Setup scripts can be run with `lammy setup` (interactive selection)
 - Stores everything in `~/.config/lammy/config.json`
 - Flags: `--api-key`, `--github-token` to skip prompts
 
@@ -88,7 +88,9 @@ lammy sync               # Sync SSH configs (clean up terminated VMs)
 - Displays specs, pricing, and available regions
 
 **`lammy vms`**
-- Shows your currently running VMs
+- Shows your currently running VMs (filtered by your SSH key)
+- Only shows VMs launched with your SSH key (not coworkers' VMs)
+- Use `--all` flag to see all team VMs
 - Displays instance ID, name, type, IP, status, and region
 - Clean output without table borders for easy copy/paste
 
@@ -98,7 +100,6 @@ lammy sync               # Sync SSH configs (clean up terminated VMs)
 - Auto-generates instance name if not provided
 - Waits for IP assignment and sets up SSH config
 - Auto-configures git if GitHub token is set
-- Auto-runs your configured setup scripts
 - Options: `--type`, `--region`, `--ssh-key`, `--name`
 
 **`lammy down [identifier]`**
@@ -114,16 +115,17 @@ lammy sync               # Sync SSH configs (clean up terminated VMs)
 - Pass through extra SSH args: `lammy ssh -L 8080:localhost:8080`
 
 **`lammy setup [identifier]`**
-- Run full setup on a VM (git + setup scripts)
-- Useful for VMs created outside lammy or re-running setup
-- Uses your stored GitHub token and setup scripts
+- Run setup scripts on a VM (interactive selection)
+- Shows list of configured scripts and lets you pick which to run
+- Can select one, multiple (e.g., "1,3"), or "all"
 - Without identifier: uses most recent instance
-- Note: `lammy up` runs this automatically
+- Configure scripts once with `lammy auth`
 
 **`lammy sync`**
-- Syncs SSH config with currently running VMs
+- Syncs SSH config with your currently running VMs
 - Removes stale SSH entries for terminated instances
-- Updates SSH config for all running VMs
+- Only manages VMs launched with your SSH key (ignores coworkers' VMs)
+- Updates SSH config for all your running VMs
 - Clears cached last instance if it's no longer running
 
 ### Smart Features
@@ -131,7 +133,7 @@ lammy sync               # Sync SSH configs (clean up terminated VMs)
 **Auto SSH Key Detection**
 - If you have exactly 1 SSH key registered: auto-selected
 - If you have multiple: interactive prompt shown
-- No configuration or "default" settings needed
+- Selected key is remembered for future launches and used to filter your VMs
 
 **Last Instance Tracking**
 - `lammy` remembers your most recent instance
@@ -150,9 +152,9 @@ lammy sync               # Sync SSH configs (clean up terminated VMs)
 - Custom git email/name for commits
 - `GITHUB_TOKEN` exported to environment (persists in `.bashrc`/`.zshrc`)
 
-**Auto Setup Scripts**
+**Setup Scripts**
 - Configure once during `lammy auth`
-- Automatically run on every `lammy up`
+- Run with `lammy setup` (interactive selection)
 - Support URLs (curl + bash) or local file paths
 - Perfect for installing dependencies, tools, dotfiles, etc.
 - Example: `https://raw.githubusercontent.com/user/repo/main/install.sh`
@@ -237,17 +239,11 @@ lammy up                  # Launch VM (git auto-configured!)
 lammy ssh                 # Connect and start cloning
 ```
 
-**Configure custom setup scripts:**
+**Configure and run custom setup scripts:**
 ```bash
 lammy auth                # During auth, add setup scripts like:
                          # https://raw.githubusercontent.com/camfer-dev/BlobLearn/main/scripts/install.sh
-lammy up                  # Scripts auto-run on launch!
-```
-
-**Re-run setup on existing VM:**
-```bash
-lammy setup               # Re-run git config + setup scripts
-                         # Useful for VMs created via Lambda console
+lammy setup               # Run scripts on your VM (pick which ones to run)
 ```
 
 **Clean up after terminated VMs:**

@@ -205,7 +205,7 @@ def auth(app: AppContext, api_key: Optional[str], github_token: Optional[str]) -
                 changed = True
     else:
         # Not configured - ask if they want to configure it
-        if Confirm.ask("Configure VM setup scripts? (auto-run on lammy up)", default=False):
+        if Confirm.ask("Configure VM setup scripts? (run with lammy setup)", default=False):
             app.console.print("[dim]Enter script URLs or local paths (one per line, empty line to finish):[/]")
             scripts = []
             while True:
@@ -245,15 +245,26 @@ def list_types(app: AppContext) -> None:
 
 
 @cli.command("vms")
+@click.option("--all", is_flag=True, help="Show all VMs (including coworkers')")
 @click.pass_obj
-def list_vms(app: AppContext) -> None:
+def list_vms(app: AppContext, all: bool) -> None:
     """List your currently running VMs."""
 
     with handle_api_errors(app.console):
         instances = app.client().list_instances()
 
+        # Filter to only user's VMs unless --all is specified
+        if not all and app.config.default_ssh_key:
+            instances = [
+                inst for inst in instances
+                if app.config.default_ssh_key in inst.ssh_key_names
+            ]
+
     if not instances:
-        app.console.print("[yellow]No VMs are currently running.[/]")
+        if all:
+            app.console.print("[yellow]No VMs are currently running.[/]")
+        else:
+            app.console.print("[yellow]No VMs found using your SSH key.[/] Use [cyan]--all[/] to see all team VMs.")
         return
 
     app.console.print(instance_table(instances))
@@ -346,10 +357,6 @@ def up(
                 app.console.print("[green]Git configured[/] - ready to clone private repos")
             # If failed, warning already printed by helper
 
-        # Run custom setup scripts if configured
-        if app.config.setup_scripts:
-            _run_setup_scripts(app, alias, app.config.setup_scripts)
-
     else:
         label = status_label or "provisioning"
         reason = "still acquiring IP" if not instance.ip else f"currently {label}"
@@ -407,7 +414,18 @@ def sync(app: AppContext) -> None:
 
     with handle_api_errors(app.console):
         # Get all running instances
-        instances = app.client().list_instances()
+        all_instances = app.client().list_instances()
+
+        # Filter to only instances using user's SSH key
+        if app.config.default_ssh_key:
+            instances = [
+                inst for inst in all_instances
+                if app.config.default_ssh_key in inst.ssh_key_names
+            ]
+        else:
+            # No SSH key configured yet, show all instances
+            instances = all_instances
+
         running_ids = {inst.id for inst in instances}
 
         # Check if last_instance_id is still running
@@ -430,53 +448,63 @@ def sync(app: AppContext) -> None:
             app.console.print(f"[red]Failed to read SSH config:[/] {exc}")
             return
 
-        # Find and remove all Lammy entries
+        # Find all Lammy entries
         from .ssh import LAMMY_MARKER
         pattern = re.compile(
             rf"# {re.escape(LAMMY_MARKER)} (.+?) start\n.*?# {re.escape(LAMMY_MARKER)} \1 end\n?",
             flags=re.DOTALL,
         )
 
-        # Count and remove all lammy entries
-        removed_count = len(pattern.findall(content))
+        # Build set of aliases for running instances
+        running_aliases = set()
+        for inst in instances:
+            if inst.ip:
+                alias = default_alias(DEFAULT_SSH_ALIAS_PREFIX, inst.preferred_display_name(), inst.id)
+                running_aliases.add(alias)
 
-        if removed_count > 0:
-            app.console.print(f"[dim]Removed {removed_count} old SSH entries[/]")
-            # Clean the content
-            cleaned_content = pattern.sub("", content).strip()
-        else:
-            cleaned_content = content.strip()
+        # Find all existing Lammy entries
+        existing_entries = pattern.findall(content)
+        stale_aliases = [alias for alias in existing_entries if alias not in running_aliases]
 
-        # Re-add entries for all currently running instances
-        if instances:
-            for inst in instances:
-                if inst.ip:
-                    alias = default_alias(DEFAULT_SSH_ALIAS_PREFIX, inst.preferred_display_name(), inst.id)
-                    ensure_ssh_entry(
-                        alias,
-                        inst.ip,
-                        user=app.config.ssh_user,
-                        identity_file=app.config.ssh_identity_file,
-                    )
-            app.console.print(f"[green]Synced {len(instances)} running VMs[/]")
-        else:
-            # No running instances, write cleaned config without any lammy entries
+        if stale_aliases:
+            app.console.print(f"[dim]Removing {len(stale_aliases)} stale SSH entries[/]")
+            # Remove stale entries
+            cleaned_content = pattern.sub(
+                lambda m: "" if m.group(1) in stale_aliases else m.group(0),
+                content
+            ).strip()
             ssh_config_path.write_text(cleaned_content + "\n" if cleaned_content else "", encoding="utf-8")
-            if removed_count > 0:
-                app.console.print("[green]SSH config cleaned[/]")
-            else:
-                app.console.print("[green]No running VMs to sync[/]")
+
+        # Add/update entries for running instances
+        added_count = 0
+        for inst in instances:
+            if inst.ip:
+                alias = default_alias(DEFAULT_SSH_ALIAS_PREFIX, inst.preferred_display_name(), inst.id)
+                ensure_ssh_entry(
+                    alias,
+                    inst.ip,
+                    user=app.config.ssh_user,
+                    identity_file=app.config.ssh_identity_file,
+                )
+                added_count += 1
+
+        if added_count > 0:
+            app.console.print(f"[green]Synced {added_count} running VMs[/]")
+        elif stale_aliases:
+            app.console.print("[green]SSH config cleaned[/]")
+        else:
+            app.console.print("[dim]No changes needed[/]")
 
 
 @cli.command("setup")
 @click.argument("identifier", required=False)
 @click.pass_obj
 def setup(app: AppContext, identifier: Optional[str]) -> None:
-    """Configure git on a VM (useful for VMs created outside lammy)."""
+    """Run setup scripts on a VM (interactive script selection)."""
 
-    if not app.config.github_token:
+    if not app.config.setup_scripts:
         app.console.print(
-            "[yellow]No GitHub token configured.[/] Run [cyan]lammy auth[/] to set one up."
+            "[yellow]No setup scripts configured.[/] Run [cyan]lammy auth[/] to add some."
         )
         return
 
@@ -509,21 +537,26 @@ def setup(app: AppContext, identifier: Optional[str]) -> None:
             identity_file=app.config.ssh_identity_file,
         )
 
-        # Setup git
+        # Show available scripts
         app.console.print(f"[dim]Configuring {instance.preferred_display_name()}...[/]")
+        app.console.print("\n[bold]Available setup scripts:[/]")
+        for idx, script in enumerate(app.config.setup_scripts, 1):
+            app.console.print(f"  {idx}. {script}")
+        app.console.print()
 
-        git_success = _setup_git_on_vm(app, alias, app.config.github_token)
-        if git_success:
-            app.console.print("[green]Git configured[/]")
-        else:
-            app.console.print("[yellow]Git setup failed[/]")
+        # Get user selection
+        selected_scripts = _select_setup_scripts(app, app.config.setup_scripts)
+        if not selected_scripts:
+            app.console.print("[yellow]No scripts selected[/]")
+            return
 
-        # Run custom setup scripts
-        if app.config.setup_scripts:
-            _run_setup_scripts(app, alias, app.config.setup_scripts)
+        # Run selected scripts
+        success = _run_setup_scripts(app, alias, selected_scripts)
 
-        if git_success or app.config.setup_scripts:
+        if success:
             app.console.print("[green]Setup complete[/]")
+        else:
+            app.console.print("[yellow]Setup completed with errors[/]")
 
 
 @cli.command("ssh")
@@ -841,6 +874,52 @@ def _status_label(raw_status: Optional[str]) -> str:
     return str(raw_status).strip().lower()
 
 
+def _select_setup_scripts(
+    app: AppContext,
+    scripts: list[str],
+) -> list[str]:
+    """
+    Interactive selection of setup scripts to run.
+    User can select one, multiple (comma-separated), or 'all'.
+    Returns list of selected scripts.
+    """
+    if not scripts:
+        return []
+
+    if len(scripts) == 1:
+        # Only one script - ask if they want to run it
+        if Confirm.ask(f"Run setup script?", default=True):
+            return scripts
+        return []
+
+    # Multiple scripts - let user choose
+    while True:
+        selection = Prompt.ask(
+            "Select scripts to run (e.g., '1', '1,2', or 'all')",
+            default="all",
+        ).strip().lower()
+
+        if selection == "all":
+            return scripts
+
+        # Parse comma-separated numbers
+        try:
+            indices = [int(x.strip()) for x in selection.split(",")]
+            selected = []
+            for idx in indices:
+                if 1 <= idx <= len(scripts):
+                    selected.append(scripts[idx - 1])
+                else:
+                    app.console.print(f"[red]Invalid selection: {idx}[/]")
+                    break
+            else:
+                # All indices were valid
+                if selected:
+                    return selected
+        except ValueError:
+            app.console.print("[red]Invalid format. Use numbers like '1', '1,2', or 'all'[/]")
+
+
 def _run_setup_scripts(
     app: AppContext,
     alias: str,
@@ -857,7 +936,7 @@ def _run_setup_scripts(
     if not scripts:
         return True
 
-    app.console.print(f"[dim]Running {len(scripts)} setup script(s)...[/]")
+    app.console.print(f"\n[bold]Running {len(scripts)} setup script(s)...[/]\n")
 
     for idx, script in enumerate(scripts, 1):
         script = script.strip()
@@ -866,16 +945,16 @@ def _run_setup_scripts(
 
         # Check if it's a URL or local file
         if script.startswith(("http://", "https://")):
-            # Remote script - curl and pipe to bash
+            # Remote script - use curl and bash on the remote VM directly
             # If it's a GitHub URL and we have a token, use it for authentication
             if "github.com" in script and app.config.github_token:
-                cmd_script = f'curl -fsSL -H "Authorization: token {app.config.github_token}" "{script}" | bash'
-                app.console.print(f"[dim]{idx}. Running remote script (authenticated): {script}[/]")
+                remote_cmd = f'curl -fsSL -H "Authorization: token {app.config.github_token}" "{script}" | bash'
+                app.console.print(f"{idx}. Running remote script (authenticated): {script}")
             else:
-                cmd_script = f'curl -fsSL "{script}" | bash'
-                app.console.print(f"[dim]{idx}. Running remote script: {script}[/]")
+                remote_cmd = f'curl -fsSL "{script}" | bash'
+                app.console.print(f"{idx}. Running remote script: {script}")
         else:
-            # Local file - read and execute
+            # Local file - read content and send it to remote bash
             local_path = Path(script).expanduser()
             if not local_path.exists():
                 app.console.print(f"[yellow]{idx}. Script not found: {script}[/]")
@@ -883,36 +962,58 @@ def _run_setup_scripts(
 
             try:
                 script_content = local_path.read_text()
-                cmd_script = script_content
-                app.console.print(f"[dim]{idx}. Running local script: {script}[/]")
+                app.console.print(f"{idx}. Running local script: {script}")
+                # For local scripts, we'll send the content via stdin
+                try:
+                    result = subprocess.run(
+                        ["ssh", alias, "bash", "-s"],
+                        input=script_content,
+                        text=True,
+                        timeout=300,  # 5 minute timeout
+                    )
+
+                    if result.returncode == 0:
+                        app.console.print(f"[green]{idx}. ✓ Complete[/]\n")
+                    else:
+                        app.console.print(
+                            f"[yellow]{idx}. Failed (exit {result.returncode})[/]\n"
+                        )
+                        return False
+                    continue
+
+                except subprocess.TimeoutExpired:
+                    app.console.print(f"[yellow]{idx}. Timed out after 5 minutes[/]\n")
+                    return False
+                except Exception as exc:
+                    app.console.print(f"[yellow]{idx}. Error: {exc}[/]\n")
+                    return False
+
             except Exception as exc:
                 app.console.print(f"[yellow]{idx}. Failed to read {script}: {exc}[/]")
                 continue
 
+        # For remote scripts, execute the curl command directly on the VM
         try:
+            # Run the command on the remote machine and stream output to console
             result = subprocess.run(
-                ["ssh", alias, "bash", "-s"],
-                input=cmd_script,
-                capture_output=True,
+                ["ssh", alias, remote_cmd],
                 text=True,
                 timeout=300,  # 5 minute timeout
             )
 
             if result.returncode == 0:
-                app.console.print(f"[green]{idx}. ✓ Complete[/]")
+                app.console.print(f"[green]{idx}. ✓ Complete[/]\n")
             else:
                 app.console.print(
-                    f"[yellow]{idx}. Failed (exit {result.returncode})[/]"
+                    f"[yellow]{idx}. Failed (exit {result.returncode})[/]\n"
                 )
-                if result.stderr:
-                    app.console.print(f"[dim]{result.stderr.strip()[:200]}[/]")
                 return False
 
         except subprocess.TimeoutExpired:
-            app.console.print(f"[yellow]{idx}. Timed out after 5 minutes[/]")
+            app.console.print(f"[yellow]{idx}. Timed out after 5 minutes[/]\n")
             return False
         except Exception as exc:
-            app.console.print(f"[yellow]{idx}. Error: {exc}[/]")
+            app.console.print(f"[yellow]{idx}. Error: {exc}[/]\n")
             return False
 
     return True
