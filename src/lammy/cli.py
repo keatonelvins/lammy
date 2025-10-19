@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import secrets
 import time
 from contextlib import contextmanager
@@ -35,7 +34,7 @@ class AppContext:
         key = self.api_key or self.config.api_key
         if not key:
             raise click.UsageError(
-                "No API key configured. Run `lammy auth login` or provide --api-key."
+                "No API key configured. Run `lammy auth` or provide --api-key."
             )
         return key
 
@@ -138,8 +137,36 @@ def auth(app: AppContext, api_key: Optional[str], github_token: Optional[str]) -
             config = app.config_manager.set_github_token(github_token)
             app.config = config
             app.console.print("[green]GitHub token saved[/]")
+
+            # Git config (email/name)
+            if Confirm.ask("Configure git email/name?", default=True):
+                git_email = Prompt.ask("Git email", default=app.config.git_email or "")
+                git_name = Prompt.ask("Git name", default=app.config.git_name or "")
+
+                if git_email:
+                    app.config.git_email = git_email.strip()
+                if git_name:
+                    app.config.git_name = git_name.strip()
+
+                app.config_manager.save(app.config)
+                app.console.print("[green]Git config saved[/]")
         else:
             app.console.print("[dim]Skipping GitHub token[/]")
+
+    # Setup scripts (optional)
+    if Confirm.ask("Configure VM setup scripts? (auto-run on lammy up)", default=False):
+        app.console.print("[dim]Enter script URLs or local paths (one per line, empty line to finish):[/]")
+        scripts = []
+        while True:
+            script = Prompt.ask(f"Script {len(scripts) + 1}", default="")
+            if not script:
+                break
+            scripts.append(script.strip())
+
+        if scripts:
+            app.config.setup_scripts = scripts
+            app.config_manager.save(app.config)
+            app.console.print(f"[green]Saved {len(scripts)} setup script(s)[/]")
 
     app.console.print(f"[dim]Config: {app.config_manager.config_path.expanduser()}[/]")
 
@@ -214,10 +241,10 @@ def up(
             raise click.Abort()
 
         # Select/generate instance name
-        desired_name = _select_instance_name(app, selected_type, instance_name)
+        desired_name = _select_instance_name(selected_type, instance_name)
 
         # Launch instance
-        image_payload = _choose_default_image_payload(app)
+        image_payload = _choose_default_image_payload()
         instance_ids = app.client().launch_instance(
             region_name=region_name,
             instance_type_name=selected_type.name,
@@ -244,7 +271,7 @@ def up(
 
     # Setup SSH if ready
     if instance.ip and status_label in SSH_READY_STATUSES:
-        path = ensure_ssh_entry(
+        ensure_ssh_entry(
             alias,
             instance.ip,
             user=app.config.ssh_user,
@@ -260,6 +287,11 @@ def up(
             if _setup_git_on_vm(app, alias, app.config.github_token):
                 app.console.print("[green]Git configured[/] - ready to clone private repos")
             # If failed, warning already printed by helper
+
+        # Run custom setup scripts if configured
+        if app.config.setup_scripts:
+            _run_setup_scripts(app, alias, app.config.setup_scripts)
+
     else:
         label = status_label or "provisioning"
         reason = "still acquiring IP" if not instance.ip else f"currently {label}"
@@ -310,42 +342,6 @@ def down(
     if app.config.last_instance_id == target.id:
         app.clear_last_instance()
 
-@cli.command("restart")
-@click.argument("identifier", required=False)
-@click.option("--force", is_flag=True, help="Skip confirmation prompt.")
-@click.pass_obj
-def restart(
-    app: AppContext,
-    identifier: Optional[str],
-    force: bool,
-) -> None:
-    """Restart an instance (interactive selection if multiple)."""
-
-    with handle_api_errors(app.console):
-        target = _determine_target_instance(app, identifier)
-        if target is None:
-            return
-
-        if not force:
-            confirm = Confirm.ask(
-                f"Restart [cyan]{target.preferred_display_name()}[/] ({target.id})?",
-                default=False,
-            )
-            if not confirm:
-                app.console.print("[yellow]Cancelled.[/]")
-                return
-
-        restarted = app.client().restart_instances([target.id])
-
-    if restarted:
-        inst = restarted[0]
-        app.console.print(
-            f"[green]Restarted:[/] {inst.preferred_display_name()} ({inst.id})"
-        )
-    else:
-        app.console.print("[yellow]Restart requested.[/]")
-
-
 @cli.command("sync")
 @click.pass_obj
 def sync(app: AppContext) -> None:
@@ -376,30 +372,25 @@ def sync(app: AppContext) -> None:
             app.console.print(f"[red]Failed to read SSH config:[/] {exc}")
             return
 
-        # Find all Lammy entries
+        # Find and remove all Lammy entries
         from .ssh import LAMMY_MARKER
         pattern = re.compile(
             rf"# {re.escape(LAMMY_MARKER)} (.+?) start\n.*?# {re.escape(LAMMY_MARKER)} \1 end\n?",
             flags=re.DOTALL,
         )
 
-        removed_count = 0
-        for match in pattern.finditer(content):
-            alias = match.group(1)
-            # Check if this alias corresponds to a running instance
-            # Aliases look like "lammy-gpu-1x-a10-xyz" where xyz is part of instance name/id
-            # For simplicity, we'll just report what we found
-            removed_count += 1
+        # Count and remove all lammy entries
+        removed_count = len(pattern.findall(content))
 
-        if removed_count == 0:
-            app.console.print("[green]SSH config is clean - no stale entries found[/]")
+        if removed_count > 0:
+            app.console.print(f"[dim]Removed {removed_count} old SSH entries[/]")
+            # Clean the content
+            cleaned_content = pattern.sub("", content).strip()
         else:
-            app.console.print(
-                f"[dim]Found {removed_count} SSH config entries. "
-                f"Currently {len(instances)} VMs running.[/]"
-            )
+            cleaned_content = content.strip()
 
-            # Update SSH entries for all running instances
+        # Re-add entries for all currently running instances
+        if instances:
             for inst in instances:
                 if inst.ip:
                     alias = default_alias(DEFAULT_SSH_ALIAS_PREFIX, inst.preferred_display_name(), inst.id)
@@ -409,14 +400,20 @@ def sync(app: AppContext) -> None:
                         user=app.config.ssh_user,
                         identity_file=app.config.ssh_identity_file,
                     )
+            app.console.print(f"[green]Synced {len(instances)} running VMs[/]")
+        else:
+            # No running instances, write cleaned config without any lammy entries
+            ssh_config_path.write_text(cleaned_content + "\n" if cleaned_content else "", encoding="utf-8")
+            if removed_count > 0:
+                app.console.print("[green]SSH config cleaned[/]")
+            else:
+                app.console.print("[green]No running VMs to sync[/]")
 
-            app.console.print(f"[green]Synced {len(instances)} SSH entries[/]")
 
-
-@cli.command("setup-git")
+@cli.command("setup")
 @click.argument("identifier", required=False)
 @click.pass_obj
-def setup_git(app: AppContext, identifier: Optional[str]) -> None:
+def setup(app: AppContext, identifier: Optional[str]) -> None:
     """Configure git on a VM (useful for VMs created outside lammy)."""
 
     if not app.config.github_token:
@@ -455,13 +452,20 @@ def setup_git(app: AppContext, identifier: Optional[str]) -> None:
         )
 
         # Setup git
-        app.console.print(f"[dim]Configuring git on {instance.preferred_display_name()}...[/]")
-        if _setup_git_on_vm(app, alias, app.config.github_token):
-            app.console.print(
-                f"[green]Git configured[/] - ready to clone private repos"
-            )
+        app.console.print(f"[dim]Configuring {instance.preferred_display_name()}...[/]")
+
+        git_success = _setup_git_on_vm(app, alias, app.config.github_token)
+        if git_success:
+            app.console.print("[green]Git configured[/]")
         else:
-            app.console.print("[red]Git setup failed[/]")
+            app.console.print("[yellow]Git setup failed[/]")
+
+        # Run custom setup scripts
+        if app.config.setup_scripts:
+            _run_setup_scripts(app, alias, app.config.setup_scripts)
+
+        if git_success or app.config.setup_scripts:
+            app.console.print("[green]Setup complete[/]")
 
 
 @cli.command("ssh")
@@ -605,12 +609,6 @@ def _select_region(
             f"[yellow]Region '{provided}' is not available for {instance_type.name}. Pick another.[/]"
         )
 
-    if app.config.default_region:
-        default_lower = _normalize(app.config.default_region)
-        for region in available:
-            if _normalize(region.name) == default_lower:
-                return region.name
-
     if len(available) == 1:
         return available[0].name
 
@@ -665,6 +663,14 @@ def _auto_select_ssh_key(app: AppContext, provided: Optional[str]) -> Optional[s
             "SSH key",
             default=default_choice,
         ).strip()
+
+        # Try numeric selection first
+        if selection.isdigit():
+            index = int(selection) - 1
+            if 0 <= index < len(keys):
+                return keys[index].name
+
+        # Try name match
         for key in keys:
             if key.name == selection:
                 return key.name
@@ -672,26 +678,25 @@ def _auto_select_ssh_key(app: AppContext, provided: Optional[str]) -> Optional[s
 
 
 def _select_instance_name(
-    app: AppContext,
     instance_type: InstanceTypeSummary,
     provided: Optional[str],
 ) -> str:
     if provided:
-        return provided
-    default_name = _generate_default_instance_name(app, instance_type)
-    return Prompt.ask("Instance name", default=default_name).strip()
+        return provided.strip()
+    default_name = _generate_default_instance_name(instance_type)
+    name = Prompt.ask("Instance name", default=default_name).strip()
+    # Ensure we don't end up with an empty name
+    return name if name else default_name
 
 
-def _generate_default_instance_name(
-    app: AppContext, instance_type: InstanceTypeSummary
-) -> str:
+def _generate_default_instance_name(instance_type: InstanceTypeSummary) -> str:
     base = sanitize_alias(instance_type.name)
     suffix = secrets.token_hex(1)
     prefix = sanitize_alias(DEFAULT_SSH_ALIAS_PREFIX)
     return f"{prefix}-{base}-{suffix}"
 
 
-def _choose_default_image_payload(app: AppContext) -> Optional[dict]:
+def _choose_default_image_payload() -> Optional[dict]:
     """Choose the default image payload (always GPU Base 24.04)."""
     return _parse_image(DEFAULT_IMAGE)
 
@@ -728,7 +733,7 @@ def _determine_target_instance(
             return app.client().get_instance(app.config.last_instance_id)
         except LammyApiError:
             # Fall back to prompting if the remembered instance no longer exists.
-            pass
+            app.clear_last_instance()
 
     instances = app.client().list_instances()
     if not instances:
@@ -770,6 +775,78 @@ def _status_label(raw_status: Optional[str]) -> str:
     return str(raw_status).strip().lower()
 
 
+def _run_setup_scripts(
+    app: AppContext,
+    alias: str,
+    scripts: list[str],
+) -> bool:
+    """
+    Run custom setup scripts on a VM.
+    Scripts can be URLs (curl + bash) or local file paths.
+    Returns True if all successful, False otherwise.
+    """
+    import subprocess
+    from pathlib import Path
+
+    if not scripts:
+        return True
+
+    app.console.print(f"[dim]Running {len(scripts)} setup script(s)...[/]")
+
+    for idx, script in enumerate(scripts, 1):
+        script = script.strip()
+        if not script:
+            continue
+
+        # Check if it's a URL or local file
+        if script.startswith(("http://", "https://")):
+            # Remote script - curl and pipe to bash
+            cmd_script = f'curl -fsSL "{script}" | bash'
+            app.console.print(f"[dim]{idx}. Running remote script: {script}[/]")
+        else:
+            # Local file - read and execute
+            local_path = Path(script).expanduser()
+            if not local_path.exists():
+                app.console.print(f"[yellow]{idx}. Script not found: {script}[/]")
+                continue
+
+            try:
+                script_content = local_path.read_text()
+                cmd_script = script_content
+                app.console.print(f"[dim]{idx}. Running local script: {script}[/]")
+            except Exception as exc:
+                app.console.print(f"[yellow]{idx}. Failed to read {script}: {exc}[/]")
+                continue
+
+        try:
+            result = subprocess.run(
+                ["ssh", alias, "bash", "-s"],
+                input=cmd_script,
+                capture_output=True,
+                text=True,
+                timeout=300,  # 5 minute timeout
+            )
+
+            if result.returncode == 0:
+                app.console.print(f"[green]{idx}. ✓ Complete[/]")
+            else:
+                app.console.print(
+                    f"[yellow]{idx}. Failed (exit {result.returncode})[/]"
+                )
+                if result.stderr:
+                    app.console.print(f"[dim]{result.stderr.strip()[:200]}[/]")
+                return False
+
+        except subprocess.TimeoutExpired:
+            app.console.print(f"[yellow]{idx}. Timed out after 5 minutes[/]")
+            return False
+        except Exception as exc:
+            app.console.print(f"[yellow]{idx}. Error: {exc}[/]")
+            return False
+
+    return True
+
+
 def _setup_git_on_vm(
     app: AppContext,
     alias: str,
@@ -781,30 +858,44 @@ def _setup_git_on_vm(
     """
     import subprocess
 
-    # Create script to configure git
+    # Use custom git email/name if configured, otherwise use defaults
+    git_email = app.config.git_email or "user@lambda.local"
+    git_name = app.config.git_name or "Lambda User"
+
+    # Create script that reads token from stdin to avoid exposure in process list
+    # The token will be read from stdin on the first line
     setup_script = f"""
 set -e
+# Read token from stdin (first line)
+read -r GITHUB_TOKEN
+
 # Configure git credential helper
 git config --global credential.helper store
-echo "https://{github_token}@github.com" > ~/.git-credentials
+echo "https://$GITHUB_TOKEN@github.com" > ~/.git-credentials
 chmod 600 ~/.git-credentials
 
-# Set basic git config if not already set
-if [ -z "$(git config --global user.email)" ]; then
-    git config --global user.email "user@lambda.local"
-fi
-if [ -z "$(git config --global user.name)" ]; then
-    git config --global user.name "Lambda User"
+# Set git config
+git config --global user.email "{git_email}"
+git config --global user.name "{git_name}"
+
+# Export GITHUB_TOKEN persistently
+if ! grep -q "export GITHUB_TOKEN=" ~/.bashrc 2>/dev/null; then
+    echo "export GITHUB_TOKEN=\\"$GITHUB_TOKEN\\"" >> ~/.bashrc
 fi
 
-echo "Git configured successfully"
+# Also set for current session (for zsh users)
+if [ -f ~/.zshrc ] && ! grep -q "export GITHUB_TOKEN=" ~/.zshrc 2>/dev/null; then
+    echo "export GITHUB_TOKEN=\\"$GITHUB_TOKEN\\"" >> ~/.zshrc
+fi
+
+echo "Git configured successfully (GITHUB_TOKEN exported)"
 """
 
     try:
-        # Run setup script on remote VM
+        # Run setup script on remote VM, passing token as first line of stdin
         result = subprocess.run(
             ["ssh", alias, "bash", "-s"],
-            input=setup_script,
+            input=f"{github_token}\n{setup_script}",
             capture_output=True,
             text=True,
             timeout=30,

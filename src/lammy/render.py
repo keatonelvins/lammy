@@ -16,6 +16,7 @@ def instance_table(instances: Iterable[InstanceRecord]) -> Table:
         title="Running Instances",
         title_style="bold",
     )
+    table.add_column("#", justify="right", style="dim")
     table.add_column("ID", overflow="fold", no_wrap=False)
     table.add_column("Name")
     table.add_column("Type")
@@ -25,9 +26,10 @@ def instance_table(instances: Iterable[InstanceRecord]) -> Table:
     table.add_column("IP")
     table.add_column("Region")
 
-    for inst in instances:
+    for idx, inst in enumerate(instances, start=1):
         specs = inst.instance_type.specs
         table.add_row(
+            str(idx),
             inst.id,
             inst.preferred_display_name(),
             inst.instance_type.name,
@@ -49,6 +51,7 @@ def instance_types_table(items: Iterable[InstanceTypeSummary]) -> Table:
         title="Instance Types",
         title_style="bold",
     )
+    table.add_column("#", justify="right", style="dim")
     table.add_column("Name")
     table.add_column("Description")
     table.add_column("GPUs", justify="right")
@@ -58,10 +61,11 @@ def instance_types_table(items: Iterable[InstanceTypeSummary]) -> Table:
     table.add_column("Price/hr", justify="right")
     table.add_column("Regions")
 
-    for item in items:
+    for idx, item in enumerate(items, start=1):
         specs = item.specs
         regions = ", ".join(region.name for region in item.regions_with_capacity) or "—"
         table.add_row(
+            str(idx),
             item.name,
             item.description or "",
             _maybe(specs.gpus),
@@ -83,11 +87,13 @@ def ssh_keys_table(keys: Iterable[SshKeyRecord]) -> Table:
         title="SSH Keys",
         title_style="bold",
     )
+    table.add_column("#", justify="right", style="dim")
     table.add_column("Name")
     table.add_column("ID")
     table.add_column("Fingerprint")
-    for key in keys:
+    for idx, key in enumerate(keys, start=1):
         table.add_row(
+            str(idx),
             key.name,
             key.id,
             _fingerprint(key.public_key),

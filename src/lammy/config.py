@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import json
 import os
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 CONFIG_DIR_ENV = "LAMMY_HOME"
 DEFAULT_CONFIG_DIR = Path.home() / ".config" / "lammy"
@@ -18,6 +18,9 @@ class LammyConfig:
 
     api_key: Optional[str] = None
     github_token: Optional[str] = None
+    git_email: Optional[str] = None
+    git_name: Optional[str] = None
+    setup_scripts: List[str] = field(default_factory=list)
     ssh_user: str = "ubuntu"
     ssh_identity_file: Optional[str] = None
     last_instance_id: Optional[str] = None
