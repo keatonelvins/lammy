@@ -867,8 +867,13 @@ def _run_setup_scripts(
         # Check if it's a URL or local file
         if script.startswith(("http://", "https://")):
             # Remote script - curl and pipe to bash
-            cmd_script = f'curl -fsSL "{script}" | bash'
-            app.console.print(f"[dim]{idx}. Running remote script: {script}[/]")
+            # If it's a GitHub URL and we have a token, use it for authentication
+            if "github.com" in script and app.config.github_token:
+                cmd_script = f'curl -fsSL -H "Authorization: token {app.config.github_token}" "{script}" | bash'
+                app.console.print(f"[dim]{idx}. Running remote script (authenticated): {script}[/]")
+            else:
+                cmd_script = f'curl -fsSL "{script}" | bash'
+                app.console.print(f"[dim]{idx}. Running remote script: {script}[/]")
         else:
             # Local file - read and execute
             local_path = Path(script).expanduser()
